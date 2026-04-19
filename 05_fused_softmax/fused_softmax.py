@@ -37,15 +37,19 @@ def naive_softmax(x):
     overflows when doing .exp(); softmax is invariant to this shift
     '''
     # read MN elements, find their max along N, and write M elements (the maxes)
+    ##loading the M elements and then writing it 
     x_max = x.max(dim=1)[0] 
         # pytorch actually outputs a tuple of (values, indices) so [0] grabs the values;
         # we ignored the indices when talking about memory writes above
     # read MN + M elements, subtraction is MN flops, and write MN elements
+    ##now we compute the max (i believe comoputing the max will be normal operation )
     z = x - x_max[:, None]
     # read MN elements and write MN elemnts
+    ##writing the MN elements 
     numerator = torch.exp(z)
         # exp is actually a lot of flops per element but we're only worried about mem ops rn
     # read MN elements, do MN flops to find M sum values, and then write M elements
+    ##repeat the same thing 
     denominator = numerator.sum(dim=1)
     # read MN + M elements, division is MN flops, then write MN elements
     out = numerator / denominator[:, None]
@@ -69,6 +73,12 @@ each program (individual call of the kernel) loads a set of rows of the input ma
 note an important limitation of Triton is that each block must have a power-of-two number of
   elements, so we need to internally "pad" each row and guard the memory operations properly
 """
+
+##now we are going to divide with rows and columns 
+##softmax is along the row 
+## so we are going to first get the program id as the row_start and the row_step is going to be the steps we are taking in between 
+## we get that by num programs 
+##each program follows a stride 
 
 ######### Step 4 #########
 @triton.jit 
@@ -103,6 +113,7 @@ def _softmax_kernel(
         col_offsets = tl.arange(0, BLOCK_SIZE) # we can fit each row in a single block
         input_ptrs = row_start_ptr + col_offsets
         mask = col_offsets < n_cols
+        ##we get the entire row 
         row = tl.load(input_ptrs, mask=mask, other=float('-inf')) 
             # we fill in masked out indices with -inf since that's the value that won't influence softmax
 
@@ -237,8 +248,6 @@ def softmax(x):
         x, y,
         x.stride(0), y.stride(0),
         n_rows, n_cols,
-        BLOCK_SIZE,
-        num_stages
     )
     return y
 
