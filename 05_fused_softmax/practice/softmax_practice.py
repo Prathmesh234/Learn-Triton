@@ -65,54 +65,47 @@ def _softmax_kernel(
     BLOCK_SIZE: tl.constexpr,
     num_stages: tl.constexpr,
 ):
-    ##we need to get the row start fist 
-    ##first get the program id 
-    ##however unlike the vector add the row_start is just a proxy for start, row_idx will be the real start for each row 
-    row_start = tl.program_id(0)
-    ##now we have the program id - we need the number of programs we are running 
-    row_step = tl.num_programs(0)
-
-    ##always remember output_ptr, input_ptr is LIKE AN ADDRESS  = 1000, 3000 etc
-
-    ##so now we got the start id AND THE num_programs. Now we will have a for loop iterating over each row 
-    ## however we will be using num_stages as each of these will be working in parallel 
-    ##num_programs are the parallel programs running for each row in the tensor 
-    for row_idx in tl.range(row_start, n_rows, row_step, num_stages=num_stages):
-
-        ##now we go thru each of the row 
-        #for 0th place it will be 0
-        ## for the pid 2 - input_ptr = 0 + (num_program is 2) 0+ 2*4 = 8
-        ##every alternate one as the other pids working on the rest of the rows 
-        #[1,2,3,4,5,6,7,8,9,10,11,12] - example 
-        ## input_ptr = 0. row_idx = 1000, input_row_stride = 4 = 0 
-        ## for the next pid  - 1000 + 2*4 = 1008
-        row_start_ptr = input_ptr + row_idx*input_row_stride
-
-        ##now we have to take care of the cols as we will be iterating over the entire tensor 
-        ##calculating the offsets 
-        ##This is the normal stuff as in vector addition now
-        col_offsets = tl.arange(0, BLOCK_SIZE)
-        ## as you remember once we get offsets we need each of the input_ptr 
-        ## each of the row elements 
-        input_ptrs = row_start_ptr + col_offsets
-        #now we do the masking 
-        mask = col_offsets < n_cols
-
-        ##now we load the entire row 
-        row = tl.load(input_ptrs, mask=mask, other=float('-inf'))
-        ##so now we have the entire row we do the softmax cal
-        row_minus_max = row - tl.max(row, axis=0)
-        numerator = tl.exp(row_minus_max)
-
-        ##now we get the denominator 
-        denominator =  tl.sum(numerator, axis=0)
-        softmax_output = numerator / denominator
-        ##now we store it in the output 
-        ##we do row_idx as we want to store the output in the same format too like in strides 
-        output_row_start_ptr = output_ptr + row_idx * output_row_stride
-        tl.store(output_row_start_ptr + col_offsets, softmax_output, mask=mask)
+##understand difference between list and a single value - that is basically it
+## a list of addresses and a single address 
 
 
+   ##in a simple way softmax is basically softmax = e^(i - row_max)/sum(e^(i - row_max))
+   ##first we have to get the program id 
+   ##also because row_start is 0 in the beginng 
+   row_start= tl.program_id(0)
+   row_step = tl.num_programs(0) #this is because we will have 2 parallel  programs (in case program is 2)
+   ## num_programs is just basically programs that can execute on a gpu 
+   ##num_program is decided by taking the min between the max register count for the op and max shared mem possible 
+   for row_idx in tl.range(row_start, n_rows, row_step, num_stages=num_stages):
+    ##now we have to get the input ptr for the starting row 
+    ## remember we have the input_ptr now for each row it will be input_ptr + row_idx*input_row_stride
+    ## the input_ptr by default is an address, row_idx will be 0 making ( row_idx*input_row_stride == 0)
+    ## in turn helping understand 
+    input_row_ptr = input_ptr + row_idx*input_row_stride
+    #now that we have address if the input_row_ptr we have to get the cols and the offsets 
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    row_list = col_offsets + input_row_ptr
+    #now we have to create the mask 
+    ## BLOCK_SIZE is a power-of-2 padded size (e.g. 1024) but n_cols is the REAL width (e.g. 781)
+    ## col_offsets < BLOCK_SIZE is ALWAYS True → loads garbage memory past column 781!
+    ## col_offsets < n_cols correctly marks positions 781-1023 as False → gets -inf instead
+    mask = col_offsets < n_cols
+    #now we load the entire row  - tl.load and tl.store expect the *entire list of addresses
+    row = tl.load(row_list, mask=mask, other=float('-inf'))
+    #now that we have loaded it 
+    #we first compute the max (axis=0 = reduce across the 1D row)
+    row_max = tl.max(row, axis=0)
+    numerator = tl.exp(row - row_max)
+    # reuse numerator (already computed above) instead of calling exp again
+    denominator = tl.sum(numerator, axis=0)
+    output  = numerator / denominator
+    ##now we store it in the output_ptr 
+    ## row_idx is a good proxy for shifts which are happening like it is a unified multiplier
+    output_ptrs = output_ptr + row_idx*output_row_stride
+    ##again tl.store expects the addresses, and values
+    ##however our output_ptrs only has that single address as output_ptr (address - 1000), row_idx*input_row_stide is a single value 
+
+    tl.store(output_ptrs + col_offsets, output, mask=mask)
 
 
 ######### Step 3: The Wrapper #########
