@@ -190,6 +190,7 @@ def _matmul_kernel(
     track of math. 
     """
     # we start with a 1D launch grid that we will turn into a 2D grid with a complicated "group-wise" ordering
+    ##program id basically gets what is defined in the kernel_function[(grid, )] -> the grid here.
     PID = tl.program_id(axis=0) 
     # defining the size of groups
     num_PID_along_M = tl.cdiv(M, BLOCK_SIZE_M) # the number of blocks along M dimension
@@ -218,6 +219,7 @@ def _matmul_kernel(
     offsets_K = tl.arange(0, BLOCK_SIZE_K)
     # in previous lessons the blocks we loaded into SRAM were vectors; here they are matrices
     a_offsets = offsets_M[:, None] * stride_a_M + offsets_K[None, :] * stride_a_K
+    #b is of shape K x N
     b_offsets = offsets_K[:, None] * stride_b_K + offsets_N[None, :] * stride_b_N
     """
     [:, None] turns [m1,m2,m3] into [[m1],[m2],[m3]] 

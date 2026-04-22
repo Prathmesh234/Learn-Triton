@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Group-Major Ordering | Triton Matmul</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #07071a;
+  --surface: #0f0f26;
+  --surface2: #181835;
+  --border: #2a2a50;
+  --text: #d0d0f0;
+  --dim: #6060a0;
+  --sm0: #a855f7; --sm0bg: #2d1060;
+  --sm1: #06b6d4; --sm1bg: #062535;
+  --sm2: #f59e0b; --sm2bg: #2d1e00;
+  --sm3: #10b981; --sm3bg: #052a1e;
+  --gold: #ffd700;
+  --sram: #3b82f6;
+  --unused: #14142a;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--bg); color:var(--text); font-family:'Inter',sans-serif; padding:1.5rem; min-height:100vh; }
+
+h1 { font-size:1.6rem; font-weight:700; background:linear-gradient(135deg,#a855f7,#06b6d4); -webkit-background-clip:text; -webkit-text-fill-color:transparent; margin-bottom:.3rem; }
+.subtitle { color:var(--dim); font-size:.85rem; margin-bottom:1.5rem; }
+
+/* Mode toggle */
+.mode-bar { display:flex; gap:.5rem; margin-bottom:1.5rem; align-items:center; flex-wrap:wrap; }
+.mode-btn { padding:.5rem 1.2rem; border-radius:8px; border:2px solid var(--border); background:var(--surface); color:var(--dim); cursor:pointer; font-family:'Inter',sans-serif; font-weight:600; font-size:.85rem; transition:all .2s; }
+.mode-btn.active { border-color:var(--sm0); color:var(--sm0); background:var(--sm0bg); }
+.mode-btn:hover:not(.active) { border-color:var(--border); color:var(--text); }
+.label { color:var(--dim); font-size:.8rem; font-weight:600; letter-spacing:.08em; text-transform:uppercase; }
+
+/* SM selector */
+.sm-btns { display:flex; gap:.5rem; }
+.sm-btn { padding:.4rem .9rem; border-radius:6px; border:2px solid; cursor:pointer; font-family:'Inter',sans-serif; font-weight:600; font-size:.8rem; transition:all .2s; opacity:.5; }
+.sm-btn.active { opacity:1; }
+.sm-btn[data-sm="0"] { border-color:var(--sm0); color:var(--sm0); background:var(--sm0bg); }
+.sm-btn[data-sm="1"] { border-color:var(--sm1); color:var(--sm1); background:var(--sm1bg); }
+.sm-btn[data-sm="2"] { border-color:var(--sm2); color:var(--sm2); background:var(--sm2bg); }
+.sm-btn[data-sm="3"] { border-color:var(--sm3); color:var(--sm3); background:var(--sm3bg); }
+
+/* Main grid layout */
+.main { display:grid; grid-template-columns:1fr auto 1fr auto 1fr; gap:.8rem; align-items:start; margin-bottom:1.5rem; }
+.op-sym { display:flex; align-items:center; justify-content:center; font-size:2rem; color:var(--dim); font-weight:300; padding-top:2rem; }
+
+/* Matrix container */
+.mat-wrap { display:flex; flex-direction:column; gap:.5rem; }
+.mat-title { font-size:.8rem; font-weight:600; color:var(--dim); text-transform:uppercase; letter-spacing:.08em; text-align:center; }
+.mat-grid { display:grid; grid-template-columns:repeat(4, 1fr); gap:4px; }
+.cell {
+  aspect-ratio:1;
+  border-radius:6px;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  font-family:'JetBrains Mono',monospace;
+  font-size:.7rem; font-weight:600;
+  border:2px solid transparent;
+  transition:all .25s;
+  cursor:default;
+  position:relative;
+  min-width:52px; min-height:52px;
+}
+.cell .pid { font-size:.85rem; font-weight:700; }
+.cell .sub { font-size:.6rem; opacity:.7; }
+
+/* C-matrix cell states */
+.cell.sm0 { background:var(--sm0bg); border-color:var(--sm0); color:var(--sm0); }
+.cell.sm1 { background:var(--sm1bg); border-color:var(--sm1); color:var(--sm1); }
+.cell.sm2 { background:var(--sm2bg); border-color:var(--sm2); color:var(--sm2); }
+.cell.sm3 { background:var(--sm3bg); border-color:var(--sm3); color:var(--sm3); }
+.cell.inactive { background:var(--unused); border-color:var(--border); color:var(--dim); opacity:.4; }
+.cell.selected-sm { transform:scale(1.08); box-shadow:0 0 16px 2px; z-index:2; }
+.cell.selected-sm.sm0 { box-shadow:0 0 16px 2px var(--sm0); }
+.cell.selected-sm.sm1 { box-shadow:0 0 16px 2px var(--sm1); }
+.cell.selected-sm.sm2 { box-shadow:0 0 16px 2px var(--sm2); }
+.cell.selected-sm.sm3 { box-shadow:0 0 16px 2px var(--sm3); }
+
+/* A/B matrix cell states */
+.cell.ab-unused  { background:var(--unused); border-color:var(--border); color:var(--dim); opacity:.3; }
+.cell.ab-sram    { background:#0f2040; border-color:var(--sram); color:var(--sram); }
+.cell.ab-loading { background:#2d2400; border-color:var(--gold); color:var(--gold); animation:pulse .7s ease-in-out infinite alternate; }
+.cell.ab-future  { background:#1a1428; border-color:#6633aa; color:#6633aa; opacity:.7; }
+@keyframes pulse { from { box-shadow:0 0 6px var(--gold); } to { box-shadow:0 0 20px var(--gold); } }
+
+/* K step controls */
+.k-controls { display:flex; align-items:center; gap:1rem; margin-bottom:1.5rem; flex-wrap:wrap; }
+.k-slider-wrap { display:flex; align-items:center; gap:.7rem; flex:1; }
+input[type=range] { flex:1; min-width:150px; accent-color:var(--sm0); }
+.k-step-label { font-family:'JetBrains Mono',monospace; font-size:.85rem; color:var(--gold); min-width:80px; }
+
+/* Stats */
+.stats { display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-bottom:1.5rem; }
+.stat-card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:1rem 1.2rem; }
+.stat-card h3 { font-size:.75rem; text-transform:uppercase; letter-spacing:.1em; color:var(--dim); margin-bottom:.6rem; }
+.stat-row { display:flex; justify-content:space-between; align-items:center; margin-bottom:.4rem; font-size:.85rem; }
+.stat-val { font-family:'JetBrains Mono',monospace; font-weight:700; }
+.bar-wrap { height:6px; background:var(--border); border-radius:3px; margin-top:.3rem; }
+.bar { height:100%; border-radius:3px; transition:width .4s; }
+
+/* Comparison callout */
+.callout { background:var(--surface2); border:1px solid var(--border); border-radius:12px; padding:1rem 1.2rem; display:flex; gap:2rem; align-items:center; flex-wrap:wrap; }
+.callout-stat { text-align:center; }
+.callout-stat .big { font-size:2rem; font-weight:700; font-family:'JetBrains Mono',monospace; }
+.callout-stat .small { font-size:.75rem; color:var(--dim); text-transform:uppercase; letter-spacing:.08em; }
+.callout-explain { flex:1; font-size:.83rem; line-height:1.7; color:var(--text); }
+.callout-explain strong { color:var(--gold); }
+
+/* legend */
+.legend { display:flex; gap:1rem; flex-wrap:wrap; margin-bottom:1rem; }
+.leg { display:flex; align-items:center; gap:.4rem; font-size:.75rem; color:var(--dim); }
+.leg-dot { width:12px; height:12px; border-radius:3px; border:2px solid; flex-shrink:0; }
+
+.divider { border:none; border-top:1px solid var(--border); margin:1.2rem 0; }
+</style>
+</head>
+<body>
+
+<h1>Group-Major vs Row-Major Ordering</h1>
+<p class="subtitle">M=N=K=8 · BLOCK_SIZE=2 · 4×4 block grid · GROUP_SIZE=2 · 4 PIDs/SM</p>
+
+<div class="mode-bar">
+  <span class="label">Ordering:</span>
+  <button class="mode-btn active" id="btn-row" onclick="setMode('row')">Row-Major (Naive)</button>
+  <button class="mode-btn" id="btn-group" onclick="setMode('group')">Group-Major (Optimized)</button>
+  <div style="width:1px;height:24px;background:var(--border);margin:0 .5rem"></div>
+  <span class="label">SM group:</span>
+  <div class="sm-btns">
+    <button class="sm-btn active" data-sm="0" onclick="setSM(0)">SM 0</button>
+    <button class="sm-btn" data-sm="1" onclick="setSM(1)">SM 1</button>
+    <button class="sm-btn" data-sm="2" onclick="setSM(2)">SM 2</button>
+    <button class="sm-btn" data-sm="3" onclick="setSM(3)">SM 3</button>
+  </div>
+</div>
+
+<div class="legend">
+  <div class="leg"><div class="leg-dot" style="border-color:var(--gold);background:#2d2400"></div> Loading from DRAM now</div>
+  <div class="leg"><div class="leg-dot" style="border-color:var(--sram);background:#0f2040"></div> Cached in SRAM</div>
+  <div class="leg"><div class="leg-dot" style="border-color:#6633aa;background:#1a1428"></div> Will load in future step</div>
+  <div class="leg"><div class="leg-dot" style="border-color:var(--border);background:var(--unused)"></div> Not needed by this SM</div>
+</div>
+
+<div class="main">
+  <div class="mat-wrap">
+    <div class="mat-title" id="a-title">A (4 row-blocks × 4 K-blocks)</div>
+    <div class="mat-grid" id="grid-A"></div>
+  </div>
+  <div class="op-sym">@</div>
+  <div class="mat-wrap">
+    <div class="mat-title" id="b-title">B (4 K-blocks × 4 col-blocks)</div>
+    <div class="mat-grid" id="grid-B"></div>
+  </div>
+  <div class="op-sym">=</div>
+  <div class="mat-wrap">
+    <div class="mat-title" id="c-title">C (PID Assignment)</div>
+    <div class="mat-grid" id="grid-C"></div>
+  </div>
+</div>
+
+<div class="k-controls">
+  <span class="label">K-step:</span>
+  <div class="k-slider-wrap">
+    <button class="mode-btn" onclick="prevK()" style="padding:.3rem .8rem">◀</button>
+    <input type="range" id="k-slider" min="0" max="3" value="0" oninput="setK(+this.value)">
+    <button class="mode-btn" onclick="nextK()" style="padding:.3rem .8rem">▶</button>
+  </div>
+  <span class="k-step-label" id="k-label">K step 0/3</span>
+  <span style="color:var(--dim);font-size:.8rem">Accumulating A[row, <span id="k-col" style="color:var(--gold)">0</span>] @ B[<span id="k-row" style="color:var(--gold)">0</span>, col]</span>
+</div>
+
+<div class="stats">
+  <div class="stat-card">
+    <h3>DRAM Loads (up to current K-step)</h3>
+    <div class="stat-row">
+      <span>A blocks loaded:</span>
+      <span class="stat-val" id="stat-a" style="color:#a855f7">-</span>
+    </div>
+    <div class="stat-row">
+      <span>B blocks loaded:</span>
+      <span class="stat-val" id="stat-b" style="color:#06b6d4">-</span>
+    </div>
+    <div class="stat-row" style="border-top:1px solid var(--border);padding-top:.4rem;margin-top:.2rem">
+      <span><strong>Total unique DRAM loads:</strong></span>
+      <span class="stat-val" id="stat-total" style="color:var(--gold)">-</span>
+    </div>
+    <div class="bar-wrap" style="margin-top:.5rem">
+      <div class="bar" id="stat-bar" style="background:var(--gold)"></div>
+    </div>
+    <div style="font-size:.72rem;color:var(--dim);margin-top:.3rem">Max possible (no sharing): <span style="color:var(--text)">32 blocks/SM</span></div>
+  </div>
+
+  <div class="stat-card">
+    <h3>Full-run Projection (all 4 K-steps)</h3>
+    <div class="stat-row">
+      <span>Row-Major total:</span>
+      <span class="stat-val" id="proj-row" style="color:#ef4444">20 blocks</span>
+    </div>
+    <div class="stat-row">
+      <span>Group-Major total:</span>
+      <span class="stat-val" id="proj-group" style="color:#10b981">16 blocks</span>
+    </div>
+    <div class="stat-row" style="border-top:1px solid var(--border);padding-top:.4rem;margin-top:.2rem">
+      <span><strong>SRAM reuse savings:</strong></span>
+      <span class="stat-val" style="color:#10b981">20% fewer DRAM loads</span>
+    </div>
+    <div style="margin-top:.5rem;font-size:.72rem;color:var(--dim)">
+      Row-major: <span style="color:#ef4444">■■■■■■■■■■■■■■■■■■■■</span> 20<br>
+      Group-major: <span style="color:#10b981">■■■■■■■■■■■■■■■■</span> 16
+    </div>
+  </div>
+</div>
+
+<div class="callout" id="callout">
+  <div class="callout-stat">
+    <div class="big" id="call-num" style="color:var(--gold)">-</div>
+    <div class="small">DRAM loads<br>this SM</div>
+  </div>
+  <div style="width:1px;height:50px;background:var(--border)"></div>
+  <div class="callout-explain" id="call-explain"></div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────
+let mode = 'row'; // 'row' | 'group'
+let selectedSM = 0;
+let kStep = 0;
+
+// ── Mappings ───────────────────────────────────────────────────────────
+// Returns array of {pid, smId, tileRow, tileCol} for each pid 0..15
+function getMapping(m) {
+  const res = [];
+  for (let pid = 0; pid < 16; pid++) {
+    let tileRow, tileCol;
+    if (m === 'row') {
+      tileRow = Math.floor(pid / 4);
+      tileCol = pid % 4;
+    } else {
+      // GROUP_SIZE=2, num_PID_along_N=4, num_PID_in_group=8
+      const G = 2, nM = 4, nN = 4, nG = G * nN;
+      const gid = Math.floor(pid / nG);
+      const firstM = gid * G;
+      const adj = Math.min(nM - firstM, G);
+      tileRow = firstM + ((pid % nG) % adj);
+      tileCol = Math.floor((pid % nG) / adj);
+    }
+    res.push({ pid, smId: Math.floor(pid / 4), tileRow, tileCol });
+  }
+  return res;
+}
+
+// For a selected SM, return which tiles it owns
+function getSMTiles(m, smId) {
+  return getMapping(m).filter(e => e.smId === smId);
+}
+
+// ── Compute which A/B blocks an SM needs ──────────────────────────────
+// A[tileRow, k], B[k, tileCol]  for each k in 0..3
+function computeBlocks(m, smId, upToK) {
+  const tiles = getSMTiles(m, smId);
+  const aLoaded = new Set(); // "row,k"
+  const bLoaded = new Set(); // "k,col"
+
+  for (let k = 0; k <= upToK; k++) {
+    const uniqueAThisStep = new Set();
+    const uniqueBThisStep = new Set();
+    for (const t of tiles) {
+      uniqueAThisStep.add(`${t.tileRow},${k}`);
+      uniqueBThisStep.add(`${k},${t.tileCol}`);
+    }
+    uniqueAThisStep.forEach(v => aLoaded.add(v));
+    uniqueBThisStep.forEach(v => bLoaded.add(v));
+  }
+  return { aLoaded, bLoaded };
+}
+
+// Blocks loading AT a specific k step (for highlighting)
+function blocksAtStep(m, smId, k) {
+  const tiles = getSMTiles(m, smId);
+  const aAt = new Set(), bAt = new Set();
+  for (const t of tiles) {
+    aAt.add(`${t.tileRow},${k}`);
+    bAt.add(`${k},${t.tileCol}`);
+  }
+  return { aAt, bAt };
+}
+
+// All blocks this SM will EVER need
+function allBlocksSM(m, smId) {
+  return computeBlocks(m, smId, 3);
+}
+
+// ── SM colors ─────────────────────────────────────────────────────────
+const smColors = ['sm0','sm1','sm2','sm3'];
+const smHex = ['#a855f7','#06b6d4','#f59e0b','#10b981'];
+
+// ── Render functions ─────────────────────────────────────────────────
+function renderC() {
+  const grid = document.getElementById('grid-C');
+  grid.innerHTML = '';
+  const map = getMapping(mode);
+  // Build lookup: [row][col] -> {pid, smId}
+  const lookup = Array.from({length:4}, () => Array(4).fill(null));
+  for (const e of map) lookup[e.tileRow][e.tileCol] = e;
+
+  for (let r = 0; r < 4; r++) {
+    for (let c = 0; c < 4; c++) {
+      const e = lookup[r][c];
+      const div = document.createElement('div');
+      div.className = 'cell ' + smColors[e.smId];
+      if (e.smId === selectedSM) div.className += ' selected-sm';
+      div.innerHTML = `<span class="pid">${e.pid}</span><span class="sub">SM${e.smId}</span>`;
+      grid.appendChild(div);
+    }
+  }
+}
+
+function renderAB() {
+  const { aLoaded, bLoaded } = computeBlocks(mode, selectedSM, kStep);
+  const { aAt, bAt } = blocksAtStep(mode, selectedSM, kStep);
+  const { aLoaded: aAll, bLoaded: bAll } = allBlocksSM(mode, selectedSM);
+
+  // A matrix: rows = tileRow (M), cols = k
+  const gA = document.getElementById('grid-A');
+  gA.innerHTML = '';
+  for (let r = 0; r < 4; r++) {
+    for (let k = 0; k < 4; k++) {
+      const key = `${r},${k}`;
+      const div = document.createElement('div');
+      div.className = 'cell ';
+      if (aAt.has(key))           div.className += 'ab-loading';
+      else if (aLoaded.has(key))  div.className += 'ab-sram';
+      else if (aAll.has(key))     div.className += 'ab-future';
+      else                        div.className += 'ab-unused';
+      div.innerHTML = `<span class="pid" style="font-size:.65rem">A[${r},${k}]</span>`;
+      gA.appendChild(div);
+    }
+  }
+
+  // B matrix: rows = k, cols = tileCol (N)
+  const gB = document.getElementById('grid-B');
+  gB.innerHTML = '';
+  for (let k = 0; k < 4; k++) {
+    for (let c = 0; c < 4; c++) {
+      const key = `${k},${c}`;
+      const div = document.createElement('div');
+      div.className = 'cell ';
+      if (bAt.has(key))           div.className += 'ab-loading';
+      else if (bLoaded.has(key))  div.className += 'ab-sram';
+      else if (bAll.has(key))     div.className += 'ab-future';
+      else                        div.className += 'ab-unused';
+      div.innerHTML = `<span class="pid" style="font-size:.65rem">B[${k},${c}]</span>`;
+      gB.appendChild(div);
+    }
+  }
+}
+
+function renderStats() {
+  const { aLoaded, bLoaded } = computeBlocks(mode, selectedSM, kStep);
+  const totalA = aLoaded.size, totalB = bLoaded.size;
+  const total = totalA + totalB;
+  document.getElementById('stat-a').textContent = totalA;
+  document.getElementById('stat-b').textContent = totalB;
+  document.getElementById('stat-total').textContent = total + ' / 32';
+  document.getElementById('stat-bar').style.width = (total / 32 * 100) + '%';
+  document.getElementById('stat-bar').style.background = total <= 16 ? '#10b981' : '#f59e0b';
+
+  // Callout
+  document.getElementById('call-num').textContent = total;
+  const tiles = getSMTiles(mode, selectedSM);
+  const tileDesc = tiles.map(t=>`(${t.tileRow},${t.tileCol})`).join(', ');
+  const aRows = [...new Set(tiles.map(t=>t.tileRow))];
+  const bCols = [...new Set(tiles.map(t=>t.tileCol))];
+  const fullA = aRows.length * 4, fullB = bCols.length * 4;
+  const savingsA = 16 - fullA, savingsB = 16 - fullB;
+
+  let tip = '';
+  if (mode === 'row') {
+    tip = `<strong>Row-Major SM${selectedSM}</strong> owns C tiles: ${tileDesc}.<br>
+    All tiles share <strong>1 unique A row-block</strong> → great A reuse (only ${fullA} A loads total).<br>
+    But each tile needs a <strong>different B column</strong> → 4 unique B col-blocks = <strong>${fullB} B loads</strong> with no sharing.<br>
+    Total DRAM loads over all K: <strong style="color:#ef4444">${fullA + fullB}</strong>`;
+  } else {
+    tip = `<strong>Group-Major SM${selectedSM}</strong> owns C tiles: ${tileDesc}.<br>
+    Tiles share <strong>${aRows.length} unique A row-blocks</strong> → ${fullA} A loads. Tiles share <strong>${bCols.length} unique B col-blocks</strong> → ${fullB} B loads.<br>
+    The 2×2 block shape gives <strong>balanced reuse on both A and B</strong>!<br>
+    Total DRAM loads over all K: <strong style="color:#10b981">${fullA + fullB}</strong>`;
+  }
+  document.getElementById('call-explain').innerHTML = tip;
+
+  // K label
+  document.getElementById('k-label').textContent = `K step ${kStep}/3`;
+  document.getElementById('k-col').textContent = kStep;
+  document.getElementById('k-row').textContent = kStep;
+}
+
+function renderAll() {
+  renderC();
+  renderAB();
+  renderStats();
+
+  // Mode buttons
+  document.getElementById('btn-row').classList.toggle('active', mode === 'row');
+  document.getElementById('btn-group').classList.toggle('active', mode === 'group');
+
+  // SM buttons
+  document.querySelectorAll('.sm-btn').forEach(b => {
+    b.classList.toggle('active', +b.dataset.sm === selectedSM);
+  });
+
+  // Slider
+  document.getElementById('k-slider').value = kStep;
+}
+
+// ── Controls ──────────────────────────────────────────────────────────
+function setMode(m) { mode = m; renderAll(); }
+function setSM(s)   { selectedSM = s; renderAll(); }
+function setK(k)    { kStep = k; renderAll(); }
+function prevK()    { if (kStep > 0) { kStep--; renderAll(); } }
+function nextK()    { if (kStep < 3) { kStep++; renderAll(); } }
+
+// ── Init ──────────────────────────────────────────────────────────────
+renderAll();
+</script>
+</body>
+</html>
